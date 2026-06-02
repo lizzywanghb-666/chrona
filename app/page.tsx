@@ -641,8 +641,6 @@ export default function Home() {
                 <div className="ml-4 flex-1 space-y-2">
                   {DISTRIBUTION_CATEGORIES.map((item) => {
                     const minutes = categoryTotals[item.key];
-                    const labelClass =
-                      "labelClass" in item ? item.labelClass : "text-gray-300";
                     return (
                       <div
                         key={item.key}
@@ -650,7 +648,7 @@ export default function Home() {
                       >
                         <div className="flex items-center gap-2">
                           <div className={`h-2 w-2 rounded-full ${item.dot}`} />
-                          <span className={labelClass}>{item.label}</span>
+                          <span className="text-gray-300">{item.label}</span>
                         </div>
                         <span className="font-medium">
                           {formatCategoryPct(minutes, passedMinutes)}
