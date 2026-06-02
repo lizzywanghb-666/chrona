@@ -78,9 +78,41 @@ type FeedItem = {
 const TOTAL_MINUTES = 1440;
 
 const STORAGE_KEYS = {
-  timeCoin: "chrona:timeCoin",
   feedList: "chrona:feedList",
 } as const;
+
+type CurrentTime = {
+  month: number;
+  day: number;
+  weekday: string;
+  hour: number;
+  minute: number;
+};
+
+const WEEKDAY_LABELS = [
+  "星期日",
+  "星期一",
+  "星期二",
+  "星期三",
+  "星期四",
+  "星期五",
+  "星期六",
+] as const;
+
+function getCurrentTime(): CurrentTime {
+  const now = new Date();
+  return {
+    month: now.getMonth() + 1,
+    day: now.getDate(),
+    weekday: WEEKDAY_LABELS[now.getDay()],
+    hour: now.getHours(),
+    minute: now.getMinutes(),
+  };
+}
+
+function formatClockTime(time: CurrentTime): string {
+  return `${String(time.hour).padStart(2, "0")}:${String(time.minute).padStart(2, "0")}`;
+}
 
 function isFeedItem(value: unknown): value is FeedItem {
   if (!value || typeof value !== "object") return false;
@@ -118,10 +150,60 @@ const CATEGORY_META: Record<
   },
   Routine: {
     label: "日常",
-    dot: "bg-gray-500",
-    badge: "bg-gray-500/15 text-gray-400",
+    dot: "bg-yellow-500",
+    badge: "bg-yellow-500/15 text-yellow-500",
   },
 };
+
+const UNKNOWN_MINUTES_COLOR = "#4b5563";
+
+const DISTRIBUTION_CATEGORIES = [
+  { key: "Deep_Work", label: "Deep Work", color: "#3B82F6", dot: "bg-blue-500" },
+  {
+    key: "Entertainment",
+    label: "Entertainment",
+    color: "#8B5CF6",
+    dot: "bg-purple-500",
+  },
+  { key: "Recovery", label: "Recovery", color: "#10B981", dot: "bg-emerald-500" },
+  {
+    key: "Routine",
+    label: "Routine",
+    color: "#EAB308",
+    dot: "bg-yellow-500",
+  },
+] as const;
+
+type CategoryKey = (typeof DISTRIBUTION_CATEGORIES)[number]["key"];
+
+function computeCategoryTotals(feedList: FeedItem[]): Record<CategoryKey, number> {
+  const totals: Record<CategoryKey, number> = {
+    Deep_Work: 0,
+    Entertainment: 0,
+    Recovery: 0,
+    Routine: 0,
+  };
+
+  for (const item of feedList) {
+    if (item.needClarification || item.duration <= 0) continue;
+    if (item.category in totals) {
+      totals[item.category as CategoryKey] += item.duration;
+    }
+  }
+
+  return totals;
+}
+
+function formatCategoryPct(minutes: number, passedMinutes: number): string {
+  if (passedMinutes <= 0) return "0%";
+  return `${Math.round((minutes / passedMinutes) * 100)}%`;
+}
+
+function formatLoggedDuration(minutes: number): string {
+  if (minutes === 0) return "0h";
+  if (minutes < 60) return `${minutes}m`;
+  return `${(minutes / 60).toFixed(1)}h`;
+}
 
 function formatFeedTime(iso: string) {
   const date = new Date(iso);
@@ -330,7 +412,13 @@ export default function Home() {
     null,
   );
   const [quickLog, setQuickLog] = useState("");
-  const [timeCoin, setTimeCoin] = useState(TOTAL_MINUTES);
+  const [currentTime, setCurrentTime] = useState<CurrentTime>({
+    month: 1,
+    day: 1,
+    weekday: "星期一",
+    hour: 0,
+    minute: 0,
+  });
   const [feedList, setFeedList] = useState<FeedItem[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -342,20 +430,39 @@ export default function Home() {
     modelUpdate: true,
   });
 
-  const usedMinutes = TOTAL_MINUTES - timeCoin;
+  const passedMinutes = currentTime.hour * 60 + currentTime.minute;
+  const timeCoin = Math.max(0, TOTAL_MINUTES - passedMinutes);
+  const usedMinutes = passedMinutes;
   const remainingPct = ((timeCoin / TOTAL_MINUTES) * 100).toFixed(1);
-  const usedPct = (usedMinutes / TOTAL_MINUTES) * 100;
+  const usedPct = (passedMinutes / TOTAL_MINUTES) * 100;
+
+  const categoryTotals = computeCategoryTotals(feedList);
+  const loggedTotalMinutes = DISTRIBUTION_CATEGORIES.reduce(
+    (sum, cat) => sum + categoryTotals[cat.key],
+    0,
+  );
+  const unknownMinutes = Math.max(0, passedMinutes - loggedTotalMinutes);
+  const distributionSegments = [
+    ...DISTRIBUTION_CATEGORIES.filter(
+      (cat) => categoryTotals[cat.key] > 0,
+    ).map((cat) => ({
+      value: categoryTotals[cat.key],
+      color: cat.color,
+    })),
+    ...(unknownMinutes > 0
+      ? [{ value: unknownMinutes, color: UNKNOWN_MINUTES_COLOR }]
+      : []),
+  ];
+
+  useEffect(() => {
+    const tick = () => setCurrentTime(getCurrentTime());
+    tick();
+    const timerId = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timerId);
+  }, []);
 
   useEffect(() => {
     try {
-      const storedCoin = localStorage.getItem(STORAGE_KEYS.timeCoin);
-      if (storedCoin !== null) {
-        const parsed = Number(storedCoin);
-        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= TOTAL_MINUTES) {
-          setTimeCoin(parsed);
-        }
-      }
-
       const storedFeed = localStorage.getItem(STORAGE_KEYS.feedList);
       if (storedFeed !== null) {
         const parsed = JSON.parse(storedFeed);
@@ -372,9 +479,8 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem(STORAGE_KEYS.timeCoin, String(timeCoin));
     localStorage.setItem(STORAGE_KEYS.feedList, JSON.stringify(feedList));
-  }, [timeCoin, feedList, hydrated]);
+  }, [feedList, hydrated]);
 
   const handleGeneratePlan = async () => {
     const trimmed = goal.trim();
@@ -432,15 +538,15 @@ export default function Home() {
       };
 
       setFeedList((prev) => [item, ...prev]);
-
-      if (!data.needClarification) {
-        setTimeCoin((prev) => Math.max(0, prev - data.duration));
-      }
     } catch {
       setErrorMessage("AI 暂时开小差了");
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleDeleteLog = (id: string) => {
+    setFeedList((prev) => prev.filter((item) => item.id !== id));
   };
 
   const toggle = (key: keyof typeof toggles) =>
@@ -456,7 +562,7 @@ export default function Home() {
       <div className="relative mx-auto flex min-h-dvh w-full max-w-[393px] flex-col overflow-hidden bg-[#0A0E1A] md:my-5 md:h-[852px] md:min-h-0 md:rounded-[50px] md:border-8 md:border-gray-800 md:shadow-[0_25px_50px_-12px_rgba(0,0,0,0.5)]">
         {/* Status bar */}
         <div className="flex h-11 shrink-0 items-center justify-between px-8 pt-4">
-          <span className="text-sm font-semibold">9:41</span>
+          <span className="text-sm font-semibold">{formatClockTime(currentTime)}</span>
           <div className="flex items-center gap-1.5">
             <Icon className="h-3 w-3">
               <path d="M2 20h2V10H2v10zm6 0h2V6H8v14zm6 0h2V2h-2v18zm6 0h2v-8h-2v8z" />
@@ -508,82 +614,50 @@ export default function Home() {
               <h3 className="mb-4 text-sm font-semibold">Daily Distribution</h3>
               <div className="flex items-center justify-between">
                 <div className="relative h-32 w-32 shrink-0">
-                  <svg
-                    viewBox="0 0 36 36"
-                    className="h-full w-full -rotate-90"
-                  >
-                    <circle
-                      cx="18"
-                      cy="18"
-                      r="16"
-                      fill="none"
-                      stroke="#374151"
-                      strokeWidth="4"
-                    />
-                    <circle
-                      cx="18"
-                      cy="18"
-                      r="16"
-                      fill="none"
-                      stroke="#3B82F6"
-                      strokeWidth="4"
-                      strokeDasharray="32 100"
-                      strokeDashoffset="0"
-                    />
-                    <circle
-                      cx="18"
-                      cy="18"
-                      r="16"
-                      fill="none"
-                      stroke="#8B5CF6"
-                      strokeWidth="4"
-                      strokeDasharray="38 100"
-                      strokeDashoffset="-32"
-                    />
-                    <circle
-                      cx="18"
-                      cy="18"
-                      r="16"
-                      fill="none"
-                      stroke="#10B981"
-                      strokeWidth="4"
-                      strokeDasharray="20 100"
-                      strokeDashoffset="-70"
-                    />
-                    <circle
-                      cx="18"
-                      cy="18"
-                      r="16"
-                      fill="none"
-                      stroke="#6B7280"
-                      strokeWidth="4"
-                      strokeDasharray="10 100"
-                      strokeDashoffset="-90"
-                    />
-                  </svg>
+                  {passedMinutes > 0 && distributionSegments.length > 0 ? (
+                    <DonutChart segments={distributionSegments} />
+                  ) : (
+                    <svg
+                      viewBox="0 0 36 36"
+                      className="h-full w-full -rotate-90"
+                    >
+                      <circle
+                        cx="18"
+                        cy="18"
+                        r="16"
+                        fill="none"
+                        stroke="#374151"
+                        strokeWidth="4"
+                      />
+                    </svg>
+                  )}
                   <div className="absolute inset-0 flex flex-col items-center justify-center">
-                    <span className="text-xs text-gray-400">已用</span>
-                    <span className="font-bold">{usedMinutes}m</span>
+                    <span className="text-xs text-gray-400">已过去</span>
+                    <span className="font-bold">
+                      {formatLoggedDuration(passedMinutes)}
+                    </span>
                   </div>
                 </div>
                 <div className="ml-4 flex-1 space-y-2">
-                  {[
-                    { label: "Deep Work", color: "bg-blue-500", pct: "32%" },
-                    { label: "Entertainment", color: "bg-purple-500", pct: "38%" },
-                    { label: "Recovery", color: "bg-emerald-500", pct: "20%" },
-                    { label: "Routine", color: "bg-gray-500", pct: "10%" },
-                  ].map((item) => (
-                    <div
-                      key={item.label}
-                      className="flex items-center justify-between text-xs"
-                    >
-                      <div className="flex items-center gap-2">
-                        <div className={`h-2 w-2 rounded-full ${item.color}`} />
-                        <span className="text-gray-300">{item.label}</span>
+                  {DISTRIBUTION_CATEGORIES.map((item) => {
+                    const minutes = categoryTotals[item.key];
+                    const labelClass =
+                      "labelClass" in item ? item.labelClass : "text-gray-300";
+                    return (
+                      <div
+                        key={item.key}
+                        className="flex items-center justify-between text-xs"
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className={`h-2 w-2 rounded-full ${item.dot}`} />
+                          <span className={labelClass}>{item.label}</span>
+                        </div>
+                        <span className="font-medium">
+                          {formatCategoryPct(minutes, passedMinutes)}
+                        </span>
                       </div>
-                      <span className="font-medium">{item.pct}</span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -656,9 +730,19 @@ export default function Home() {
                             </div>
                           )}
                         </div>
-                        <time className="shrink-0 text-[11px] text-gray-500">
-                          {formatFeedTime(item.timestamp)}
-                        </time>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteLog(item.id)}
+                            aria-label="删除记录"
+                            className="flex h-6 w-6 items-center justify-center rounded-full text-base leading-none text-gray-500 transition-colors hover:bg-white/[0.06] hover:text-rose-400"
+                          >
+                            ×
+                          </button>
+                          <time className="text-[11px] text-gray-500">
+                            {formatFeedTime(item.timestamp)}
+                          </time>
+                        </div>
                       </div>
 
                       {!item.needClarification && item.duration > 0 && (
